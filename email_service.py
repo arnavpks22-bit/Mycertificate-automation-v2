@@ -1,7 +1,5 @@
 
 import smtplib
-import ssl
-
 from email.message import EmailMessage
 
 
@@ -11,87 +9,54 @@ def send_certificate(
     recipient,
     subject,
     body,
-    certificate_pdf,
-    filename
+    attachments,
 ):
     """
-    Send a personalized certificate email
-    through Gmail SMTP.
+    attachments = [
+        ("Certificate_1.pdf", pdf_bytes),
+        ("Certificate_2.pdf", pdf_bytes)
+    ]
     """
 
-    # ======================================
-    # VALIDATE INPUTS
-    # ======================================
+    sender = sender.strip()
+    recipient = recipient.strip()
+    app_password = app_password.replace(" ", "")
 
-    if not sender or not app_password:
-        raise ValueError(
-            "Gmail sender credentials are missing."
-        )
+    if not sender or not recipient:
+        raise ValueError("Sender and recipient are required.")
 
-    if not recipient:
-        raise ValueError(
-            "Recipient email is missing."
-        )
+    if not app_password:
+        raise ValueError("Gmail App Password is required.")
 
-    if not isinstance(certificate_pdf, bytes):
-        raise TypeError(
-            "Certificate must be PDF bytes."
-        )
-
-    if not certificate_pdf.startswith(b"%PDF-"):
-        raise ValueError(
-            "Invalid PDF attachment."
-        )
-
-    if "\n" in subject or "\r" in subject:
-        raise ValueError(
-            "Email subject must be a single line."
-        )
-
-    # ======================================
-    # CREATE EMAIL
-    # ======================================
+    if not attachments:
+        raise ValueError("No certificates attached.")
 
     message = EmailMessage()
 
     message["From"] = sender
     message["To"] = recipient
     message["Subject"] = subject
-
     message.set_content(body)
 
-    # ======================================
-    # ATTACH CERTIFICATE
-    # ======================================
+    for filename, pdf_bytes in attachments:
+        if not pdf_bytes.startswith(b"%PDF"):
+            raise ValueError(
+                f"Invalid PDF attachment: {filename}"
+            )
 
-    message.add_attachment(
-        certificate_pdf,
-        maintype="application",
-        subtype="pdf",
-        filename=filename
-    )
-
-    # ======================================
-    # SEND THROUGH GMAIL
-    # ======================================
-
-    context = ssl.create_default_context()
+        message.add_attachment(
+            pdf_bytes,
+            maintype="application",
+            subtype="pdf",
+            filename=filename
+        )
 
     with smtplib.SMTP_SSL(
         "smtp.gmail.com",
         465,
-        context=context,
         timeout=30
-    ) as server:
+    ) as smtp:
+        smtp.login(sender, app_password)
+        smtp.send_message(message)
 
-        server.login(
-            sender,
-            app_password
-        )
-
-        refused = server.send_message(message)
-
-        if refused:
-            raise RuntimeError(
-                f"Gmail rejected recipients: {refused}"
-            )
+    return True

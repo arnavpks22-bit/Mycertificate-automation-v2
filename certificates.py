@@ -1,6 +1,7 @@
 
 from io import BytesIO
 from xml.sax.saxutils import escape
+import hashlib
 
 from reportlab.pdfgen import canvas
 from reportlab.lib import colors
@@ -8,47 +9,73 @@ from reportlab.lib.utils import ImageReader
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.enums import TA_CENTER
 from reportlab.platypus import Paragraph
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+
+
+PAGE_WIDTH = 841.89
+PAGE_HEIGHT = 595.28
+
+BUILTIN_FONTS = [
+    "Helvetica",
+    "Helvetica-Bold",
+    "Helvetica-Oblique",
+    "Times-Roman",
+    "Times-Bold",
+    "Times-Italic",
+    "Courier",
+    "Courier-Bold",
+    "Courier-Oblique",
+]
+
+
+def register_custom_font(font_bytes):
+    """
+    Register a TrueType font supplied by the user.
+    Returns the registered font name.
+    """
+    if not font_bytes:
+        raise ValueError("Font file is empty.")
+
+    digest = hashlib.sha256(font_bytes).hexdigest()[:16]
+    font_name = f"MiraeFont_{digest}"
+
+    if font_name not in pdfmetrics.getRegisteredFontNames():
+        pdfmetrics.registerFont(
+            TTFont(font_name, BytesIO(font_bytes))
+        )
+
+    return font_name
 
 
 def create_certificate(
     student,
-    template=None,
-    background_bytes=None,
+    background_bytes,
     name_x=50,
-    name_y=49,
-    name_font_size=28,
-    name_color="#14234B",
-    name_width=65,
+    name_y=50,
+    name_font_size=30,
+    name_color="#073F3B",
+    name_width=75,
+    name_font="Helvetica-Bold",
+    custom_font_bytes=None,
 ):
     """
-    Generate a personalized A4 landscape certificate.
+    Generate a personalized landscape A4 certificate.
 
-    name_x, name_y:
-        Percentage positions measured from the top-left.
-        Both represent the CENTER of the name.
-
-    name_font_size:
-        Maximum name font size in PDF points.
-
-    name_width:
-        Maximum text area width as a percentage.
-
-    Returns PDF bytes.
+    x and y are percentages measured from top-left.
+    Both coordinates represent the name's center.
     """
-
-    if not isinstance(student, dict):
-        raise TypeError("Student must be a dictionary.")
 
     name = str(student.get("Name", "")).strip()
 
     if not name:
-        raise ValueError("Student name cannot be empty.")
+        raise ValueError("Participant name is empty.")
 
-    if not 0 <= name_x <= 100:
-        raise ValueError("Invalid horizontal position.")
+    if not background_bytes:
+        raise ValueError("Certificate template is required.")
 
-    if not 0 <= name_y <= 100:
-        raise ValueError("Invalid vertical position.")
+    if not 0 < name_x < 100 or not 0 < name_y < 100:
+        raise ValueError("Invalid name coordinates.")
 
     if not 10 <= name_width <= 100:
         raise ValueError("Invalid name area width.")
@@ -56,116 +83,83 @@ def create_certificate(
     if not 8 <= name_font_size <= 100:
         raise ValueError("Invalid font size.")
 
-    output = BytesIO()
+    if custom_font_bytes:
+        font_name = register_custom_font(custom_font_bytes)
+    else:
+        if name_font not in BUILTIN_FONTS:
+            raise ValueError("Unsupported font.")
+        font_name = name_font
 
-    width = 841.89
-    height = 595.28
+    output = BytesIO()
 
     pdf = canvas.Canvas(
         output,
-        pagesize=(width, height)
+        pagesize=(PAGE_WIDTH, PAGE_HEIGHT)
     )
 
-    # --------------------------------------
-    # DRAW CERTIFICATE BACKGROUND
-    # --------------------------------------
-
-    if background_bytes:
-        try:
-            background = ImageReader(
-                BytesIO(background_bytes)
-            )
-
-            pdf.drawImage(
-                background,
-                0,
-                0,
-                width=width,
-                height=height,
-                preserveAspectRatio=False,
-                mask="auto"
-            )
-
-        except Exception as error:
-            raise ValueError(
-                "Unable to process certificate background."
-            ) from error
-    else:
-        pdf.setFillColor(colors.white)
-        pdf.rect(
-            0, 0, width, height,
-            fill=1,
-            stroke=0
+    try:
+        background = ImageReader(BytesIO(background_bytes))
+        pdf.drawImage(
+            background,
+            0,
+            0,
+            width=PAGE_WIDTH,
+            height=PAGE_HEIGHT,
+            preserveAspectRatio=False,
+            mask="auto"
         )
+    except Exception as error:
+        raise ValueError(
+            "Could not load certificate background."
+        ) from error
 
-    # --------------------------------------
-    # NAME POSITION
-    # --------------------------------------
+    center_x = PAGE_WIDTH * name_x / 100
+    center_y = PAGE_HEIGHT * (1 - name_y / 100)
 
-    center_x = width * name_x / 100
-    center_y = height * (1 - name_y / 100)
-
-    text_width = width * name_width / 100
-
-    # Keep the text area inside the page.
+    text_width = PAGE_WIDTH * name_width / 100
     text_width = min(
         text_width,
-        2 * min(center_x, width - center_x)
+        2 * min(center_x, PAGE_WIDTH - center_x)
     )
 
     if text_width <= 0:
-        raise ValueError(
-            "Name position is too close to the edge."
-        )
-
-    safe_text = escape(name)
+        raise ValueError("Name area is outside the page.")
 
     paragraph = None
     text_height = 0
 
-    # Reduce font size for long names.
-    for font_size in range(
-        int(name_font_size), 7, -1
-    ):
+    for size in range(int(name_font_size), 7, -1):
         style = ParagraphStyle(
-            name="CertificateName",
-            fontName="Helvetica-Bold",
-            fontSize=font_size,
-            leading=font_size * 1.15,
+            name="ParticipantName",
+            fontName=font_name,
+            fontSize=size,
+            leading=size * 1.15,
             alignment=TA_CENTER,
             textColor=colors.HexColor(name_color),
             spaceBefore=0,
             spaceAfter=0,
-            splitLongWords=True
+            splitLongWords=True,
         )
 
-        paragraph = Paragraph(
-            safe_text,
-            style
-        )
+        paragraph = Paragraph(escape(name), style)
 
         _, text_height = paragraph.wrap(
             text_width,
-            height
+            PAGE_HEIGHT
         )
 
-        if text_height <= 42:
+        if text_height <= 48:
             break
 
-    if text_height > 42:
+    if text_height > 48:
         raise ValueError(
-            "Participant name is too long for "
-            "the selected name area."
+            "Name is too long for the selected area."
         )
-
-    # Center the name vertically and horizontally.
-    draw_x = center_x - text_width / 2
-    draw_y = center_y - text_height / 2
 
     paragraph.drawOn(
         pdf,
-        draw_x,
-        draw_y
+        center_x - text_width / 2,
+        center_y - text_height / 2
     )
 
     pdf.showPage()
