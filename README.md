@@ -1,3 +1,4 @@
+This is My project
 # Certificate Automation — simplified
 
 Upload a CSV with `Name,Email`, then click **Send Emails**. The certificate design and email text are built in. No template upload, column mapping, preview, or separate generation step.
