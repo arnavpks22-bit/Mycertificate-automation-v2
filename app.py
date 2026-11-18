@@ -1,27 +1,39 @@
 
+import base64
 import hashlib
 import json
 import re
+import time
+
 from io import BytesIO
+from pathlib import Path
 from zipfile import ZipFile, ZIP_DEFLATED
 
 import pandas as pd
 import streamlit as st
-from PIL import Image, ImageDraw, ImageFont
+import streamlit.components.v1 as components
 
-from certificates import BUILTIN_FONTS, create_certificate
+from PIL import Image
+
+from certificates import create_certificate
 from email_service import send_certificate
 
 
 # ==================================================
-# 1. PAGE CONFIGURATION
+# APPLICATION CONFIGURATION
 # ==================================================
 
 st.set_page_config(
-    page_title="MiraeTech Certificate Automation",
-    page_icon="📜",
-    layout="wide",
-    initial_sidebar_state="collapsed",
+    page_title="MiraeTech Certificates",
+    page_icon="🏅",
+    layout="wide"
+)
+
+EDITOR = components.declare_component(
+    "mirae_live_editor",
+    path=str(
+        Path(__file__).parent / "certificate_editor"
+    )
 )
 
 STEPS = [
@@ -30,100 +42,114 @@ STEPS = [
     "Design",
     "Font",
     "Preview",
-    "Email",
+    "Email"
 ]
 
-TEAL = "#137C72"
-DARK = "#073F3B"
-
-EMAIL_PATTERN = r"[^@\s]+@[^@\s]+\.[^@\s]+"
-TOKEN_PATTERN = r"\{\{\s*([^{}]+?)\s*\}\}"
-
-DEFAULT_FONT_SETTINGS = {
-    "name_x": 50,
-    "name_y": 50,
-    "name_font_size": 30,
-    "name_width": 75,
-    "name_color": "#073F3B",
-    "name_font": "Helvetica-Bold",
-}
-
-FONT_PATHS = {
-    "Helvetica": [
-        "C:/Windows/Fonts/arial.ttf",
-        "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
-    ],
-    "Helvetica-Bold": [
-        "C:/Windows/Fonts/arialbd.ttf",
-        "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf",
-    ],
-    "Helvetica-Oblique": [
-        "C:/Windows/Fonts/ariali.ttf",
-        "/usr/share/fonts/truetype/liberation2/LiberationSans-Italic.ttf",
-    ],
-    "Times-Roman": [
-        "C:/Windows/Fonts/times.ttf",
-        "/usr/share/fonts/truetype/liberation2/LiberationSerif-Regular.ttf",
-    ],
-    "Times-Bold": [
-        "C:/Windows/Fonts/timesbd.ttf",
-        "/usr/share/fonts/truetype/liberation2/LiberationSerif-Bold.ttf",
-    ],
-    "Times-Italic": [
-        "C:/Windows/Fonts/timesi.ttf",
-        "/usr/share/fonts/truetype/liberation2/LiberationSerif-Italic.ttf",
-    ],
-    "Courier": [
-        "C:/Windows/Fonts/cour.ttf",
-        "/usr/share/fonts/truetype/liberation2/LiberationMono-Regular.ttf",
-    ],
-    "Courier-Bold": [
-        "C:/Windows/Fonts/courbd.ttf",
-        "/usr/share/fonts/truetype/liberation2/LiberationMono-Bold.ttf",
-    ],
-    "Courier-Oblique": [
-        "C:/Windows/Fonts/couri.ttf",
-        "/usr/share/fonts/truetype/liberation2/LiberationMono-Italic.ttf",
-    ],
+DEFAULT_STYLE = {
+    "font": "Great Vibes",
+    "size": 42,
+    "x": 50,
+    "y": 50,
+    "width": 75,
+    "color": "#073f3b"
 }
 
 
 # ==================================================
-# 2. PERSISTENT SESSION STATE
+# CUSTOM STYLING
 # ==================================================
 
-def initialize_state():
+st.markdown(
+    """
+    <style>
+    .block-container {
+        max-width: 1260px;
+        padding-top: 1.1rem;
+    }
+
+    .mirae {
+        background: linear-gradient(
+            110deg, #073f3b, #137c72
+        );
+        border-radius: 16px;
+        padding: 18px 24px;
+        color: white;
+        margin-bottom: 15px;
+    }
+
+    .mirae h2 {
+        color: white;
+        margin: 0;
+    }
+
+    .mirae p {
+        margin: 4px 0;
+        color: #d5f1e9;
+    }
+
+    div.stButton > button[kind="primary"] {
+        background: #137c72;
+        border-color: #137c72;
+    }
+
+    div[data-testid="stProgress"] > div > div {
+        background-color: #137c72;
+    }
+
+    div[data-testid="stStatusWidget"] {
+        border-radius: 12px;
+    }
+
+    div[data-testid="stSpinner"] {
+        color: #137c72;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+
+# ==================================================
+# SESSION STATE
+# ==================================================
+
+def initialize():
     defaults = {
         "page": 0,
-        "spreadsheet_bytes": None,
-        "spreadsheet_name": None,
-        "raw_data": None,
-        "name_column": None,
-        "email_column": None,
-        "validated": None,
-        "validation_report": None,
-        "validation_signature": None,
-        "certificate_count": 1,
-        "templates": {1: None, 2: None},
-        "custom_fonts": {1: None, 2: None},
-        "font_settings": {
-            1: DEFAULT_FONT_SETTINGS.copy(),
-            2: DEFAULT_FONT_SETTINGS.copy(),
+        "source_bytes": None,
+        "source_name": None,
+        "df": None,
+        "name_col": None,
+        "email_col": None,
+        "valid": None,
+        "report": None,
+        "data_sig": None,
+        "count": 1,
+        "templates": {
+            1: None,
+            2: None
         },
-        "font_confirmed_signature": None,
-        "generated_signature": None,
+        "styles": {
+            1: DEFAULT_STYLE.copy(),
+            2: DEFAULT_STYLE.copy()
+        },
+        "ttfs": {
+            1: None,
+            2: None
+        },
+        "font_confirm": None,
         "records": [],
-        "email_subject": "Your Certificate(s)",
-        "email_body": (
+        "generated_sig": None,
+        "send_results": None,
+        "send_sig": None,
+        "subject": "Your certificate(s)",
+        "body": (
             "Dear {{Name}},\n\n"
-            "Please find your personalized certificate(s) "
-            "attached to this email.\n\n"
-            "Thank you for participating.\n\n"
+            "Please find your certificate(s) "
+            "attached.\n\n"
             "Best regards,\n"
             "Organizing Team"
-        ),
-        "send_signature": None,
-        "send_results": None,
+        )
     }
 
     for key, value in defaults.items():
@@ -131,181 +157,227 @@ def initialize_state():
             st.session_state[key] = value
 
 
-initialize_state()
+initialize()
+s = st.session_state
 
 
 # ==================================================
-# 3. CUSTOM THEME
+# SIGNATURES AND INVALIDATION
 # ==================================================
 
-st.markdown(
-    """
-    <style>
-    .stApp {
-        background-color: #F2F8F6;
-    }
+def hash_value(value):
+    if isinstance(value, bytes):
+        return hashlib.sha256(value).hexdigest()
 
-    .block-container {
-        max-width: 1250px;
-        padding-top: 1rem;
-        padding-bottom: 2rem;
-    }
+    encoded = json.dumps(
+        value,
+        sort_keys=True,
+        default=str
+    ).encode()
 
-    h1, h2, h3 {
-        color: #073F3B;
-    }
+    return hashlib.sha256(encoded).hexdigest()
 
-    .mirae-header {
-        background: linear-gradient(
-            115deg, #073F3B, #137C72
-        );
-        border-radius: 16px;
-        padding: 20px 26px;
-        margin-bottom: 16px;
-    }
 
-    .mirae-header h2 {
-        color: white;
-        margin: 0;
-        padding: 0;
-    }
+def invalidate_generation():
+    s.records = []
+    s.generated_sig = None
+    s.send_results = None
+    s.send_sig = None
 
-    .mirae-header p {
-        color: #D3ECE6;
-        margin: 6px 0 0;
-    }
 
-    div.stButton > button[kind="primary"] {
-        background-color: #137C72;
-        border-color: #137C72;
-        color: white;
-    }
+def invalidate_design():
+    s.font_confirm = None
+    invalidate_generation()
 
-    div.stButton > button[kind="primary"]:hover {
-        background-color: #0B5C55;
-        border-color: #0B5C55;
-    }
 
-    div[data-testid="stMetric"] {
-        background: white;
-        border: 1px solid #D8E9E4;
-        border-radius: 12px;
-        padding: 12px;
-    }
+def data_signature():
+    return hash_value([
+        hash_value(s.source_bytes)
+        if s.source_bytes else None,
+        s.name_col,
+        s.email_col
+    ])
 
-    div[data-testid="stFileUploader"] {
-        background: white;
-        border-radius: 12px;
-        padding: 10px;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+
+def design_signature():
+    return hash_value(
+        [s.count] + [
+            hash_value(s.templates[i])
+            if s.templates[i] else None
+            for i in range(1, s.count + 1)
+        ]
+    )
+
+
+def font_signature():
+    return hash_value(
+        [design_signature()] + [
+            {
+                "style": s.styles[i],
+                "ttf": (
+                    hash_value(s.ttfs[i])
+                    if s.ttfs[i] else None
+                )
+            }
+            for i in range(1, s.count + 1)
+        ]
+    )
+
+
+def generation_signature():
+    return hash_value([
+        data_signature(),
+        font_signature()
+    ])
 
 
 # ==================================================
-# 4. GENERAL HELPERS
+# PROGRESS TRACKING
 # ==================================================
 
-def digest(data):
-    if isinstance(data, str):
-        data = data.encode("utf-8")
-    return hashlib.sha256(data).hexdigest()
+def progress_flags():
+    upload = (
+        s.df is not None
+        and not s.df.empty
+    )
 
+    data = (
+        upload
+        and s.valid is not None
+        and not s.valid.empty
+        and s.data_sig == data_signature()
+    )
 
-def object_hash(value):
-    return digest(
-        json.dumps(
-            value,
-            sort_keys=True,
-            default=str,
+    design = all(
+        s.templates[i] is not None
+        for i in range(1, s.count + 1)
+    )
+
+    font = (
+        design
+        and s.font_confirm == font_signature()
+    )
+
+    preview = (
+        font
+        and s.generated_sig == generation_signature()
+        and bool(s.records)
+        and all(
+            len(record["files"]) == s.count
+            for record in s.records
         )
     )
 
-
-def safe_filename(value):
-    return (
-        re.sub(
-            r"[^A-Za-z0-9_-]+",
-            "_",
-            str(value)
-        ).strip("_")[:60]
-        or "Participant"
+    email = (
+        preview
+        and s.send_results is not None
+        and len(s.send_results) == len(s.records)
+        and all(
+            item["Status"] != "Not attempted"
+            for item in s.send_results
+        )
     )
 
-
-def render_email(template, student):
-    return re.sub(
-        TOKEN_PATTERN,
-        lambda match: str(
-            student.get(match.group(1).strip(), "")
-        ),
-        template,
-    )
-
-
-def invalidate_email():
-    st.session_state.send_signature = None
-    st.session_state.send_results = None
+    return [
+        upload,
+        data,
+        design,
+        font,
+        preview,
+        email
+    ]
 
 
-def invalidate_generated():
-    st.session_state.records = []
-    st.session_state.generated_signature = None
-    invalidate_email()
+def navigate(target):
+    if target > 0:
+        if not all(progress_flags()[:target]):
+            st.warning(
+                "Complete the previous steps first."
+            )
+            return
+
+    s.page = target
+    st.rerun()
 
 
-def invalidate_fonts():
-    st.session_state.font_confirmed_signature = None
-    invalidate_generated()
+def navigation():
+    st.divider()
 
+    left, middle, right = st.columns([1, 3, 1])
 
-def invalidate_validation():
-    st.session_state.validated = None
-    st.session_state.validation_report = None
-    st.session_state.validation_signature = None
-    invalidate_generated()
+    with left:
+        if s.page > 0:
+            if st.button(
+                "← Previous",
+                use_container_width=True
+            ):
+                navigate(s.page - 1)
+
+    with middle:
+        st.caption(
+            f"Step {s.page + 1} of 6"
+        )
+
+    with right:
+        if s.page < 5:
+            if st.button(
+                "Next →",
+                type="primary",
+                use_container_width=True
+            ):
+                navigate(s.page + 1)
 
 
 # ==================================================
-# 5. UPLOAD CALLBACKS
+# FILE UPLOAD HELPERS
 # ==================================================
 
-def save_spreadsheet():
-    uploaded = st.session_state.get("spreadsheet_widget")
+def load_source():
+    raw = s.source_bytes
 
-    if uploaded is None:
+    if not raw:
+        return None
+
+    if s.source_name.lower().endswith(".csv"):
+        return pd.read_csv(
+            BytesIO(raw),
+            dtype=str,
+            keep_default_na=False
+        ).fillna("")
+
+    return pd.read_excel(
+        BytesIO(raw),
+        dtype=str,
+        keep_default_na=False
+    ).fillna("")
+
+
+def uploaded_source():
+    uploaded = s.get("source_widget")
+
+    if not uploaded:
         return
-
-    raw = uploaded.getvalue()
-    new_hash = digest(raw)
-
-    old_bytes = st.session_state.spreadsheet_bytes
-    old_hash = digest(old_bytes) if old_bytes else None
 
     if (
-        new_hash == old_hash
-        and uploaded.name == st.session_state.spreadsheet_name
+        s.source_bytes != uploaded.getvalue()
+        or s.source_name != uploaded.name
     ):
-        return
+        s.source_bytes = uploaded.getvalue()
+        s.source_name = uploaded.name
+        s.df = None
+        s.valid = None
+        s.report = None
+        s.data_sig = None
 
-    st.session_state.spreadsheet_bytes = raw
-    st.session_state.spreadsheet_name = uploaded.name
-
-    st.session_state.raw_data = None
-    st.session_state.name_column = None
-    st.session_state.email_column = None
-
-    invalidate_validation()
+        invalidate_generation()
 
 
 def save_template(number):
-    uploaded = st.session_state.get(
+    uploaded = s.get(
         f"template_widget_{number}"
     )
 
-    if uploaded is None:
+    if not uploaded:
         return
 
     raw = uploaded.getvalue()
@@ -316,467 +388,85 @@ def save_template(number):
     except Exception:
         return
 
-    if st.session_state.templates[number] != raw:
-        st.session_state.templates[number] = raw
-        invalidate_fonts()
+    if s.templates[number] != raw:
+        s.templates[number] = raw
+        invalidate_design()
 
 
-def save_custom_font(number):
-    uploaded = st.session_state.get(
-        f"font_upload_widget_{number}"
+def save_ttf(number):
+    uploaded = s.get(
+        f"ttf_widget_{number}"
     )
 
-    if uploaded is None:
-        return
-
-    raw = uploaded.getvalue()
-
-    if st.session_state.custom_fonts[number] != raw:
-        st.session_state.custom_fonts[number] = raw
-        invalidate_fonts()
-
-
-def remove_custom_font(number):
-    st.session_state.custom_fonts[number] = None
-    invalidate_fonts()
-
-
-def update_font_setting(number, setting):
-    widget_key = f"editor_{number}_{setting}"
-
-    new_value = st.session_state[widget_key]
-
-    old_value = st.session_state.font_settings[
-        number
-    ][setting]
-
-    if old_value != new_value:
-        st.session_state.font_settings[
-            number
-        ][setting] = new_value
-
-        invalidate_fonts()
-
-
-def update_certificate_count():
-    invalidate_fonts()
-
-
-# ==================================================
-# 6. SPREADSHEET PROCESSING
-# ==================================================
-
-def load_spreadsheet():
-    raw = st.session_state.spreadsheet_bytes
-    filename = st.session_state.spreadsheet_name
-
-    if not raw:
-        return None
-
-    if filename.lower().endswith(".csv"):
-        df = pd.read_csv(
-            BytesIO(raw),
-            dtype=str,
-            keep_default_na=False,
-        )
-    else:
-        df = pd.read_excel(
-            BytesIO(raw),
-            dtype=str,
-            keep_default_na=False,
-        )
-
-    return df.fillna("").reset_index(drop=True)
-
-
-def validate_participants(data):
-    df = data.copy().reset_index(drop=True)
-
-    df["Name"] = df["Name"].astype(str).str.strip()
-    df["Email"] = df["Email"].astype(str).str.strip()
-
-    duplicate_emails = (
-        df["Email"]
-        .str.casefold()
-        .duplicated(keep=False)
-    )
-
-    issues = []
-
-    for index, row in df.iterrows():
-        errors = []
-
-        if not row["Name"]:
-            errors.append("Missing name")
-
-        if not row["Email"]:
-            errors.append("Missing email")
-
-        elif not re.fullmatch(
-            EMAIL_PATTERN,
-            row["Email"]
-        ):
-            errors.append("Invalid email")
-
-        if row["Email"] and duplicate_emails.iloc[index]:
-            errors.append("Duplicate email")
-
-        issues.append("; ".join(errors))
-
-    report = df.copy()
-
-    report.insert(
-        0,
-        "Source Row",
-        range(2, len(df) + 2),
-    )
-
-    report["Issues"] = issues
-
-    report["Status"] = [
-        "Ready" if not issue else "Needs correction"
-        for issue in issues
-    ]
-
-    valid = df.loc[
-        report["Status"].eq("Ready")
-    ].copy()
-
-    return valid, report
-
-
-# ==================================================
-# 7. FONT PREVIEW
-# ==================================================
-
-def load_preview_font(font_name, size, custom_bytes=None):
-    size = max(8, int(size))
-
-    if custom_bytes:
-        try:
-            return ImageFont.truetype(
-                BytesIO(custom_bytes),
-                size,
-            )
-        except (OSError, ValueError):
-            pass
-
-    for path in FONT_PATHS.get(font_name, []):
-        try:
-            return ImageFont.truetype(path, size)
-        except OSError:
-            continue
-
-    return ImageFont.load_default()
-
-
-def create_image_preview(
-    background_bytes,
-    name,
-    settings,
-    custom_font_bytes=None,
-):
-    image = Image.open(
-        BytesIO(background_bytes)
-    ).convert("RGB")
-
-    # Keep the preview reasonably fast.
-    image.thumbnail((1200, 1200))
-    image = image.copy()
-
-    draw = ImageDraw.Draw(image)
-
-    width, height = image.size
-
-    center_x = width * settings["name_x"] / 100
-    center_y = height * settings["name_y"] / 100
-
-    text_area_width = (
-        width * settings["name_width"] / 100
-    )
-
-    text_area_width = min(
-        text_area_width,
-        2 * min(center_x, width - center_x),
-    )
-
-    scale = width / 841.89
-
-    initial_size = max(
-        8,
-        int(settings["name_font_size"] * scale),
-    )
-
-    font = None
-
-    for font_size in range(initial_size, 7, -1):
-        font = load_preview_font(
-            settings["name_font"],
-            font_size,
-            custom_font_bytes,
-        )
-
-        bbox = draw.textbbox(
-            (0, 0),
-            name,
-            font=font,
-        )
-
-        text_width = bbox[2] - bbox[0]
-        text_height = bbox[3] - bbox[1]
-
-        if (
-            text_width <= text_area_width
-            and text_height <= 48 * scale
-        ):
-            break
-
-    draw.text(
-        (center_x, center_y),
-        name,
-        font=font,
-        fill=settings["name_color"],
-        anchor="mm",
-    )
-
-    return image
-
-
-# ==================================================
-# 8. CURRENT CERTIFICATE CONFIGURATION
-# ==================================================
-
-def current_templates():
-    templates = []
-
-    for number in range(
-        1,
-        st.session_state.certificate_count + 1,
-    ):
-        templates.append({
-            "number": number,
-            "background": (
-                st.session_state.templates[number]
-            ),
-            "settings": (
-                st.session_state.font_settings[
-                    number
-                ].copy()
-            ),
-            "custom_font_bytes": (
-                st.session_state.custom_fonts[
-                    number
-                ]
-            ),
-        })
-
-    return templates
-
-
-def design_signature():
-    return object_hash({
-        "count": st.session_state.certificate_count,
-        "backgrounds": [
-            digest(item["background"])
-            if item["background"]
-            else None
-            for item in current_templates()
-        ],
-    })
-
-
-def font_signature():
-    return object_hash({
-        "design": design_signature(),
-        "fonts": [
-            {
-                "number": item["number"],
-                "settings": item["settings"],
-                "custom_font": (
-                    digest(item["custom_font_bytes"])
-                    if item["custom_font_bytes"]
-                    else None
-                ),
-            }
-            for item in current_templates()
-        ],
-    })
-
-
-def data_signature():
-    return object_hash({
-        "file": (
-            digest(st.session_state.spreadsheet_bytes)
-            if st.session_state.spreadsheet_bytes
-            else None
+    if uploaded:
+        if s.ttfs[number] != uploaded.getvalue():
+            s.ttfs[number] = uploaded.getvalue()
+            invalidate_design()
+
+
+def replace_tokens(template, person):
+    return re.sub(
+        r"\{\{\s*(Name|Email)\s*\}\}",
+        lambda match: str(
+            person[match.group(1)]
         ),
-        "name": st.session_state.name_column,
-        "email": st.session_state.email_column,
-    })
-
-
-def generation_signature():
-    return object_hash({
-        "data": data_signature(),
-        "fonts": font_signature(),
-    })
-
-
-def templates_ready():
-    return all(
-        item["background"] is not None
-        for item in current_templates()
+        template
     )
 
 
-def data_ready():
+def clean_filename(name):
     return (
-        st.session_state.validated is not None
-        and not st.session_state.validated.empty
-        and st.session_state.validation_signature
-        == data_signature()
-    )
-
-
-def fonts_ready():
-    return (
-        templates_ready()
-        and st.session_state.font_confirmed_signature
-        == font_signature()
-    )
-
-
-def generation_ready():
-    records = st.session_state.records
-
-    return (
-        bool(records)
-        and st.session_state.generated_signature
-        == generation_signature()
-        and all(
-            len(item["attachments"])
-            == st.session_state.certificate_count
-            for item in records
-        )
-    )
-
-
-def email_ready():
-    results = st.session_state.send_results
-
-    return (
-        generation_ready()
-        and results is not None
-        and len(results) == len(st.session_state.records)
-        and all(
-            item["Status"] != "Not attempted"
-            for item in results
-        )
+        re.sub(
+            r"[^a-zA-Z0-9_-]+",
+            "_",
+            name
+        ).strip("_")[:45]
+        or "Participant"
     )
 
 
 # ==================================================
-# 9. PROGRESS AND NAVIGATION
-# ==================================================
-
-def completion_status():
-    return [
-        st.session_state.spreadsheet_bytes is not None
-        and st.session_state.raw_data is not None,
-        data_ready(),
-        templates_ready(),
-        fonts_ready(),
-        generation_ready(),
-        email_ready(),
-    ]
-
-
-def navigate(target):
-    status = completion_status()
-
-    # Allow users to revisit earlier screens.
-    # To move forward, previous steps must be complete.
-    if target > 0 and not all(status[:target]):
-        st.warning(
-            "Complete the earlier steps before continuing."
-        )
-        return
-
-    st.session_state.page = target
-    st.rerun()
-
-
-def navigation_buttons():
-    page = st.session_state.page
-
-    st.divider()
-
-    left, center, right = st.columns([1, 3, 1])
-
-    with left:
-        if page > 0:
-            if st.button(
-                "← Previous",
-                use_container_width=True,
-            ):
-                navigate(page - 1)
-
-    with center:
-        st.caption(
-            f"Step {page + 1} of {len(STEPS)}"
-        )
-
-    with right:
-        if page < len(STEPS) - 1:
-            if st.button(
-                "Next →",
-                type="primary",
-                use_container_width=True,
-            ):
-                navigate(page + 1)
-
-
-# ==================================================
-# 10. HEADER AND PROGRESS
+# HEADER
 # ==================================================
 
 st.markdown(
     """
-    <div class="mirae-header">
+    <div class="mirae">
         <h2>✦ MiraeTech</h2>
-        <p>Certificate Automation Workspace</p>
+        <p>
+            Certificate Automation Workspace
+            · V3.3 Processing Feedback
+        </p>
     </div>
     """,
-    unsafe_allow_html=True,
+    unsafe_allow_html=True
 )
 
-status = completion_status()
-completed = sum(status)
+flags = progress_flags()
 
 st.progress(
-    completed / len(STEPS),
-    text=f"{completed} of {len(STEPS)} steps completed",
+    sum(flags) / 6,
+    text=f"{sum(flags)} of 6 steps complete"
 )
 
-nav_columns = st.columns(6)
+columns = st.columns(6)
 
-for index, column in enumerate(nav_columns):
+for index, column in enumerate(columns):
     with column:
         label = (
-            f"✓ {STEPS[index]}"
-            if status[index]
-            else f"{index + 1}. {STEPS[index]}"
+            ("✓ " if flags[index] else f"{index + 1}. ")
+            + STEPS[index]
         )
 
         if st.button(
             label,
-            key=f"navigation_{index}",
+            key=f"topnav_{index}",
             type=(
                 "primary"
-                if st.session_state.page == index
+                if s.page == index
                 else "secondary"
             ),
-            use_container_width=True,
+            use_container_width=True
         ):
             navigate(index)
 
@@ -787,874 +477,951 @@ st.divider()
 # PAGE 1: UPLOAD
 # ==================================================
 
-if st.session_state.page == 0:
-    st.header("Upload Participant Data")
-
-    st.write(
-        "Upload your CSV or Excel file containing "
-        "participant names and email addresses."
-    )
+if s.page == 0:
+    st.header("1 · Upload participants")
 
     st.file_uploader(
-        "Choose spreadsheet",
+        "CSV or Excel spreadsheet",
         type=["csv", "xlsx"],
-        key="spreadsheet_widget",
-        on_change=save_spreadsheet,
+        key="source_widget",
+        on_change=uploaded_source
     )
 
-    if st.session_state.spreadsheet_bytes:
+    if s.source_bytes:
         try:
-            df = load_spreadsheet()
+            with st.spinner(
+                "Reading and preparing spreadsheet...",
+                show_time=True
+            ):
+                s.df = load_source()
 
-            if df.empty:
+            if s.df.empty:
                 st.error("The spreadsheet is empty.")
-                st.session_state.raw_data = None
-            else:
-                st.session_state.raw_data = df
 
+            else:
                 st.success(
-                    f"{len(df)} participant records loaded."
+                    f"{len(s.df)} records loaded successfully."
                 )
 
                 st.dataframe(
-                    df.head(8),
+                    s.df.head(10),
                     hide_index=True,
-                    use_container_width=True,
-                )
-
-                st.caption(
-                    "Your spreadsheet is saved for "
-                    "this browser session."
+                    use_container_width=True
                 )
 
         except Exception as error:
-            st.session_state.raw_data = None
-            st.error(f"Unable to read file: {error}")
+            s.df = None
+            st.error(
+                f"Could not read file: {error}"
+            )
 
-    navigation_buttons()
+    navigation()
 
 
 # ==================================================
-# PAGE 2: DATA
+# PAGE 2: DATA VALIDATION
 # ==================================================
 
-elif st.session_state.page == 1:
-    st.header("Participant Data")
+elif s.page == 1:
+    st.header("2 · Validate data")
 
-    df = st.session_state.raw_data
-
-    if df is None:
-        st.warning("Upload a spreadsheet first.")
+    if s.df is None:
+        st.warning(
+            "Upload a spreadsheet first."
+        )
 
     else:
-        columns = list(df.columns)
+        names = list(s.df.columns)
 
-        def suggested_column(names):
-            for index, column in enumerate(
-                columns, start=1
-            ):
-                if column.strip().casefold() in names:
-                    return index
-            return 0
+        def suggest(words):
+            for column in names:
+                if column.lower().strip() in words:
+                    return column
+            return None
 
-        options = [None] + columns
+        options = [None] + names
 
-        left, right = st.columns(2)
+        col1, col2 = st.columns(2)
 
-        with left:
+        with col1:
+            default_name = (
+                s.name_col
+                if s.name_col in names
+                else suggest([
+                    "name",
+                    "full name",
+                    "participant name"
+                ])
+            )
+
             name_column = st.selectbox(
                 "Name column",
                 options,
-                index=(
-                    options.index(st.session_state.name_column)
-                    if st.session_state.name_column in columns
-                    else suggested_column([
-                        "name",
-                        "full name",
-                        "student name",
-                        "participant name",
-                    ])
-                ),
-                format_func=lambda x: (
-                    "Select column" if x is None else x
-                ),
+                index=options.index(default_name)
             )
 
-        with right:
+        with col2:
+            default_email = (
+                s.email_col
+                if s.email_col in names
+                else suggest([
+                    "email",
+                    "email address"
+                ])
+            )
+
             email_column = st.selectbox(
                 "Email column",
                 options,
-                index=(
-                    options.index(st.session_state.email_column)
-                    if st.session_state.email_column in columns
-                    else suggested_column([
-                        "email",
-                        "email address",
-                        "student email",
-                    ])
-                ),
-                format_func=lambda x: (
-                    "Select column" if x is None else x
-                ),
+                index=options.index(default_email)
             )
 
         if (
-            name_column != st.session_state.name_column
-            or email_column != st.session_state.email_column
+            name_column != s.name_col
+            or email_column != s.email_col
         ):
-            st.session_state.name_column = name_column
-            st.session_state.email_column = email_column
-            invalidate_validation()
+            s.name_col = name_column
+            s.email_col = email_column
+            s.valid = None
+            s.report = None
+            s.data_sig = None
+
+            invalidate_generation()
 
         if st.button(
-            "Validate Participant Data",
-            type="primary",
+            "Validate student data",
+            type="primary"
         ):
-            if not name_column or not email_column:
-                st.error("Select both columns.")
-
-            elif name_column == email_column:
+            if (
+                not name_column
+                or not email_column
+                or name_column == email_column
+            ):
                 st.error(
-                    "Name and Email must be different columns."
+                    "Select different Name and Email columns."
                 )
 
             else:
-                mapped = pd.DataFrame({
-                    "Name": df[name_column],
-                    "Email": df[email_column],
-                })
+                with st.status(
+                    "Validating student records...",
+                    expanded=True
+                ) as status:
 
-                valid, report = validate_participants(mapped)
+                    st.write(
+                        "Reading participant names and email addresses..."
+                    )
 
-                st.session_state.validated = valid
-                st.session_state.validation_report = report
-                st.session_state.validation_signature = (
-                    data_signature()
+                    frame = pd.DataFrame({
+                        "Name": (
+                            s.df[name_column]
+                            .astype(str)
+                            .str.strip()
+                        ),
+                        "Email": (
+                            s.df[email_column]
+                            .astype(str)
+                            .str.strip()
+                        )
+                    })
+
+                    st.write(
+                        "Checking missing names, invalid emails, "
+                        "and duplicate addresses..."
+                    )
+
+                    duplicate = (
+                        frame.Email
+                        .str.lower()
+                        .duplicated(keep=False)
+                    )
+
+                    issues = []
+
+                    total = len(frame)
+
+                    progress = st.progress(
+                        0,
+                        text="0% validated"
+                    )
+
+                    message = st.empty()
+
+                    for position, (_, row) in enumerate(
+                        frame.iterrows(),
+                        start=1
+                    ):
+                        errors = []
+
+                        if not row.Name:
+                            errors.append("Missing name")
+
+                        if not re.fullmatch(
+                            r"[^@\s]+@[^@\s]+\.[^@\s]+",
+                            row.Email
+                        ):
+                            errors.append("Invalid email")
+
+                        if (
+                            row.Email
+                            and duplicate.iloc[position - 1]
+                        ):
+                            errors.append("Duplicate email")
+
+                        issues.append("; ".join(errors))
+
+                        # Limit UI updates for performance.
+                        update_every = max(
+                            1,
+                            total // 100
+                        )
+
+                        if (
+                            position % update_every == 0
+                            or position == total
+                        ):
+                            progress.progress(
+                                position / total,
+                                text=(
+                                    f"Validating {position} "
+                                    f"of {total} records"
+                                )
+                            )
+
+                            message.caption(
+                                f"{position}/{total} student records checked"
+                            )
+
+                    report = frame.copy()
+
+                    report.insert(
+                        0,
+                        "Row",
+                        range(2, len(frame) + 2)
+                    )
+
+                    report["Issues"] = issues
+
+                    s.report = report
+
+                    s.valid = frame.loc[
+                        [not issue for issue in issues]
+                    ].copy()
+
+                    s.data_sig = data_signature()
+
+                    progress.progress(
+                        1.0,
+                        text="Validation complete"
+                    )
+
+                    status.update(
+                        label="Student validation completed",
+                        state="complete",
+                        expanded=False
+                    )
+
+                st.success(
+                    f"Validation finished: "
+                    f"{len(s.valid)} valid records."
                 )
 
-        report = st.session_state.validation_report
+        if s.report is not None:
+            a, b = st.columns(2)
 
-        if report is not None:
-            valid = st.session_state.validated
+            a.metric("Valid", len(s.valid))
 
-            col1, col2 = st.columns(2)
-
-            col1.metric(
-                "Valid Participants",
-                len(valid),
-            )
-
-            col2.metric(
-                "Records With Errors",
-                len(report) - len(valid),
+            b.metric(
+                "Invalid",
+                len(s.report) - len(s.valid)
             )
 
             st.dataframe(
-                report,
+                s.report,
                 hide_index=True,
-                use_container_width=True,
+                use_container_width=True
             )
 
-            invalid = report.loc[
-                report["Status"].ne("Ready")
-            ]
-
-            if not invalid.empty:
-                st.warning(
-                    "Correct the invalid records before "
-                    "sending the full batch."
-                )
-
+            if any(s.report.Issues):
                 st.download_button(
-                    "Download Error Report",
-                    invalid.to_csv(
-                        index=False
-                    ).encode("utf-8-sig"),
-                    "validation_errors.csv",
-                    "text/csv",
+                    "Download error report",
+                    s.report.to_csv(index=False),
+                    "validation_report.csv"
                 )
 
-    navigation_buttons()
+    navigation()
 
 
 # ==================================================
 # PAGE 3: DESIGN
 # ==================================================
 
-elif st.session_state.page == 2:
-    st.header("Certificate Design")
+elif s.page == 2:
+    st.header("3 · Certificate design")
 
-    st.write(
-        "Choose one or two certificates per participant."
+    count = st.radio(
+        "Certificates per participant",
+        [1, 2],
+        index=s.count - 1,
+        horizontal=True
     )
 
-    st.radio(
-        "Number of certificates",
-        options=[1, 2],
-        horizontal=True,
-        key="certificate_count",
-        on_change=update_certificate_count,
-    )
+    if count != s.count:
+        s.count = count
+        invalidate_design()
 
-    for number in range(
-        1,
-        st.session_state.certificate_count + 1
-    ):
-        st.subheader(f"Certificate {number}")
+    for number in range(1, s.count + 1):
+        st.subheader(
+            f"Certificate {number}"
+        )
 
         st.file_uploader(
-            f"Upload Certificate {number} Template",
+            f"Upload background image for certificate {number}",
             type=["png", "jpg", "jpeg"],
             key=f"template_widget_{number}",
             on_change=save_template,
-            args=(number,),
+            args=(number,)
         )
 
-        background = st.session_state.templates[number]
+        if s.templates[number]:
+            st.image(
+                s.templates[number],
+                width=550
+            )
 
-        if background:
-            try:
-                st.image(
-                    background,
-                    width=520,
-                )
+            st.success(
+                "Template uploaded successfully."
+            )
 
-                st.success(
-                    f"Certificate {number} template saved."
-                )
-
-            except Exception as error:
-                st.error(
-                    f"Invalid template: {error}"
-                )
-
-    if templates_ready():
-        st.success("All selected templates are ready.")
-
-    navigation_buttons()
+    navigation()
 
 
 # ==================================================
 # PAGE 4: LIVE FONT EDITOR
 # ==================================================
 
-elif st.session_state.page == 3:
-    st.header("Font & Name Placement")
+elif s.page == 3:
+    st.header("4 · Live font editor")
 
-    st.write(
-        "Change the font, size, color or position. "
-        "The certificate preview updates automatically."
+    st.info(
+        "Drag sliders to see instant changes. "
+        "Settings save when you release the slider."
     )
 
-    for number in range(
-        1,
-        st.session_state.certificate_count + 1
-    ):
-        st.subheader(f"Certificate {number}")
+    for number in range(1, s.count + 1):
+        st.subheader(
+            f"Certificate {number}"
+        )
 
-        background = st.session_state.templates[number]
-
-        if not background:
+        if not s.templates[number]:
             st.warning(
-                f"Upload Certificate {number} first."
+                "Upload a background on the Design step."
             )
             continue
 
-        settings = st.session_state.font_settings[number]
-
-        # Initialize widget values from persistent settings.
-        # These keys may disappear when leaving this page.
-        # The persistent dictionary remains available.
-        for setting, value in settings.items():
-            widget_key = f"editor_{number}_{setting}"
-
-            if widget_key not in st.session_state:
-                st.session_state[widget_key] = value
-
-        left, right = st.columns([1.6, 1])
-
-        with right:
-            sample_name = st.text_input(
-                "Sample participant name",
-                value="Sample Participant",
-                key=f"sample_name_{number}",
-            )
-
-            st.selectbox(
-                "Font family",
-                BUILTIN_FONTS,
-                key=f"editor_{number}_name_font",
-                on_change=update_font_setting,
-                args=(number, "name_font"),
-            )
-
-            st.file_uploader(
-                "Optional custom font (.ttf)",
-                type=["ttf"],
-                key=f"font_upload_widget_{number}",
-                on_change=save_custom_font,
-                args=(number,),
-            )
-
-            if st.session_state.custom_fonts[number]:
-                st.caption(
-                    "Custom font is active and overrides "
-                    "the selected built-in font."
-                )
-
-                if st.button(
-                    "Remove Custom Font",
-                    key=f"remove_font_{number}",
-                ):
-                    remove_custom_font(number)
-                    st.rerun()
-
-            st.slider(
-                "Font size",
-                min_value=12,
-                max_value=72,
-                key=f"editor_{number}_name_font_size",
-                on_change=update_font_setting,
-                args=(number, "name_font_size"),
-            )
-
-            st.slider(
-                "Horizontal position (%)",
-                min_value=5,
-                max_value=95,
-                key=f"editor_{number}_name_x",
-                on_change=update_font_setting,
-                args=(number, "name_x"),
-            )
-
-            st.slider(
-                "Vertical position (%)",
-                min_value=5,
-                max_value=95,
-                key=f"editor_{number}_name_y",
-                on_change=update_font_setting,
-                args=(number, "name_y"),
-            )
-
-            st.slider(
-                "Name area width (%)",
-                min_value=20,
-                max_value=90,
-                key=f"editor_{number}_name_width",
-                on_change=update_font_setting,
-                args=(number, "name_width"),
-            )
-
-            st.color_picker(
-                "Font color",
-                key=f"editor_{number}_name_color",
-                on_change=update_font_setting,
-                args=(number, "name_color"),
-            )
-
-        # Read latest values after controls render.
-        settings = st.session_state.font_settings[
-            number
-        ].copy()
-
-        custom_font_bytes = (
-            st.session_state.custom_fonts[number]
+        st.file_uploader(
+            "Optional: upload your own TrueType font (.ttf)",
+            type=["ttf"],
+            key=f"ttf_widget_{number}",
+            on_change=save_ttf,
+            args=(number,)
         )
 
-        with left:
+        if s.ttfs[number]:
+            st.caption(
+                "The uploaded font overrides the gallery "
+                "font in generated PDFs."
+            )
+
+            if st.button(
+                "Remove uploaded font",
+                key=f"remove_ttf_{number}"
+            ):
+                s.ttfs[number] = None
+                invalidate_design()
+                st.rerun()
+
+        with st.spinner(
+            "Preparing certificate editor...",
+            show_time=True
+        ):
+            image = Image.open(
+                BytesIO(s.templates[number])
+            ).convert("RGB")
+
+            image.thumbnail((1500, 1100))
+
+            buffer = BytesIO()
+            image.save(buffer, format="PNG")
+
+            background_b64 = base64.b64encode(
+                buffer.getvalue()
+            ).decode()
+
+        new_settings = EDITOR(
+            background=background_b64,
+            settings=s.styles[number],
+            sample="Sample Participant",
+            key=f"editor_{number}",
+            default=None
+        )
+
+        if isinstance(new_settings, dict):
+            clean = {
+                key: new_settings.get(
+                    key,
+                    s.styles[number][key]
+                )
+                for key in DEFAULT_STYLE
+            }
+
+            if clean != s.styles[number]:
+                s.styles[number] = clean
+                invalidate_design()
+
+        st.caption(
+            f"Selected: {s.styles[number]['font']} · "
+            f"{s.styles[number]['size']} pt · "
+            f"X {s.styles[number]['x']}% · "
+            f"Y {s.styles[number]['y']}%"
+        )
+
+        with st.spinner(
+            "Preparing sample PDF...",
+            show_time=True
+        ):
             try:
-                preview = create_image_preview(
-                    background,
-                    sample_name or "Sample Participant",
-                    settings,
-                    custom_font_bytes,
-                )
-
-                st.image(
-                    preview,
-                    use_container_width=True,
-                )
-
-                st.caption(
-                    "Live image preview. Download the "
-                    "sample PDF for exact rendering."
-                )
-
                 sample_pdf = create_certificate(
-                    {
-                        "Name": (
-                            sample_name
-                            or "Sample Participant"
-                        )
-                    },
-                    background_bytes=background,
-                    custom_font_bytes=custom_font_bytes,
-                    **settings,
+                    "Sample Participant",
+                    s.templates[number],
+                    s.styles[number],
+                    s.ttfs[number]
                 )
 
                 st.download_button(
                     f"Download Certificate {number} Sample PDF",
                     data=sample_pdf,
-                    file_name=(
-                        f"certificate_{number}_sample.pdf"
-                    ),
+                    file_name=f"certificate_{number}_sample.pdf",
                     mime="application/pdf",
-                    key=f"sample_pdf_{number}",
+                    key=f"sample_pdf_{number}"
                 )
 
             except Exception as error:
                 st.error(
-                    f"Preview error: {error}"
+                    f"Font/PDF error: {error}"
                 )
 
         st.divider()
 
     if st.button(
-        "Confirm Font & Position Settings",
-        type="primary",
+        "Confirm font settings",
+        type="primary"
     ):
-        try:
-            for item in current_templates():
-                create_certificate(
-                    {"Name": "Sample Participant"},
-                    background_bytes=item["background"],
-                    custom_font_bytes=item["custom_font_bytes"],
-                    **item["settings"],
+        with st.status(
+            "Checking fonts and certificate settings...",
+            expanded=True
+        ) as status:
+
+            try:
+                for number in range(1, s.count + 1):
+                    st.write(
+                        f"Checking certificate {number}..."
+                    )
+
+                    create_certificate(
+                        "Sample Participant",
+                        s.templates[number],
+                        s.styles[number],
+                        s.ttfs[number]
+                    )
+
+                s.font_confirm = font_signature()
+
+                status.update(
+                    label="Font settings verified",
+                    state="complete",
+                    expanded=False
                 )
 
-            st.session_state.font_confirmed_signature = (
-                font_signature()
-            )
+                st.success(
+                    "Font settings confirmed."
+                )
 
-            st.success(
-                "Font and position settings confirmed."
-            )
+            except Exception as error:
+                status.update(
+                    label="Font verification failed",
+                    state="error",
+                    expanded=True
+                )
 
-        except Exception as error:
-            st.error(
-                f"Cannot confirm settings: {error}"
-            )
+                st.error(
+                    f"Cannot confirm font: {error}"
+                )
 
-    if fonts_ready():
+    if progress_flags()[3]:
         st.success(
-            "Font customization is complete."
+            "Fonts confirmed. Continue to Preview."
         )
 
-    navigation_buttons()
+    navigation()
 
 
 # ==================================================
-# PAGE 5: GENERATE AND PREVIEW
+# PAGE 5: GENERATE CERTIFICATES
 # ==================================================
 
-elif st.session_state.page == 4:
-    st.header("Generate & Preview Certificates")
+elif s.page == 4:
+    st.header("5 · Generate certificates")
 
-    valid = st.session_state.validated
-    templates = current_templates()
-
-    if not data_ready() or not fonts_ready():
+    if not all(progress_flags()[:4]):
         st.warning(
-            "Complete Data, Design and Font steps first."
+            "Finish the previous steps."
         )
 
     else:
-        expected = (
-            len(valid)
-            * st.session_state.certificate_count
-        )
-
-        st.info(
-            f"{len(valid)} participants · "
-            f"{expected} certificate PDFs"
+        st.write(
+            f"{len(s.valid)} participants · "
+            f"{s.count} certificate(s) each"
         )
 
         if st.button(
-            "Generate All Certificates",
-            type="primary",
+            "Generate PDF certificates",
+            type="primary"
         ):
-            records = []
-            progress = st.progress(0)
+            with st.status(
+                "Generating certificates...",
+                expanded=True
+            ) as status:
 
-            for index, (source_index, row) in enumerate(
-                valid.iterrows(),
-                start=1,
-            ):
-                student = row.to_dict()
-                attachments = []
-                error = ""
-
-                try:
-                    for item in templates:
-                        pdf = create_certificate(
-                            student,
-                            background_bytes=item["background"],
-                            custom_font_bytes=(
-                                item["custom_font_bytes"]
-                            ),
-                            **item["settings"],
-                        )
-
-                        filename = (
-                            f"{index:04d}_"
-                            f"{safe_filename(student['Name'])}_"
-                            f"Certificate_{item['number']}.pdf"
-                        )
-
-                        attachments.append(
-                            (filename, pdf)
-                        )
-
-                except Exception as exc:
-                    error = str(exc)
-                    attachments = []
-
-                records.append({
-                    "student": student,
-                    "attachments": attachments,
-                    "source_row": int(source_index) + 2,
-                    "error": error,
-                })
-
-                progress.progress(index / len(valid))
-
-            st.session_state.records = records
-            st.session_state.generated_signature = (
-                generation_signature()
-            )
-
-            invalidate_email()
-
-        records = st.session_state.records
-
-        successful = [
-            item for item in records
-            if len(item["attachments"])
-            == st.session_state.certificate_count
-        ]
-
-        failed = [
-            item for item in records
-            if len(item["attachments"])
-            != st.session_state.certificate_count
-        ]
-
-        if failed:
-            st.error(
-                f"{len(failed)} participant(s) failed."
-            )
-
-            st.dataframe(
-                pd.DataFrame([
-                    {
-                        "Row": item["source_row"],
-                        "Name": item["student"]["Name"],
-                        "Error": item["error"],
-                    }
-                    for item in failed
-                ]),
-                hide_index=True,
-                use_container_width=True,
-            )
-
-        if successful:
-            st.success(
-                f"Generated {sum(len(x['attachments']) for x in successful)} "
-                "certificates successfully."
-            )
-
-            zip_buffer = BytesIO()
-
-            with ZipFile(
-                zip_buffer,
-                "w",
-                ZIP_DEFLATED,
-            ) as archive:
-                for item in successful:
-                    for filename, pdf in item["attachments"]:
-                        archive.writestr(
-                            filename,
-                            pdf,
-                        )
-
-            st.download_button(
-                "Download All Certificates (ZIP)",
-                data=zip_buffer.getvalue(),
-                file_name="miraetech_certificates.zip",
-                mime="application/zip",
-                type="primary",
-            )
-
-            selected = st.selectbox(
-                "Choose participant to preview",
-                range(len(successful)),
-                format_func=lambda i: (
-                    successful[i]["student"]["Name"]
-                ),
-            )
-
-            chosen = successful[selected]
-
-            for index, (filename, pdf) in enumerate(
-                chosen["attachments"],
-                start=1,
-            ):
-                st.download_button(
-                    f"Download Certificate {index}",
-                    data=pdf,
-                    file_name=filename,
-                    mime="application/pdf",
-                    key=f"preview_pdf_{index}",
+                st.write(
+                    "Preparing certificate templates and fonts..."
                 )
 
-    navigation_buttons()
+                records = []
+
+                total = len(s.valid)
+
+                bar = st.progress(
+                    0,
+                    text="Starting generation..."
+                )
+
+                current = st.empty()
+
+                success_count = 0
+                failed_count = 0
+
+                for position, (_, person) in enumerate(
+                    s.valid.iterrows(),
+                    start=1
+                ):
+                    person = person.to_dict()
+
+                    files = []
+                    error = ""
+
+                    current.info(
+                        f"Processing: {person['Name']}"
+                    )
+
+                    try:
+                        for number in range(
+                            1,
+                            s.count + 1
+                        ):
+                            pdf = create_certificate(
+                                person["Name"],
+                                s.templates[number],
+                                s.styles[number],
+                                s.ttfs[number]
+                            )
+
+                            filename = (
+                                f"{position:04d}_"
+                                f"{clean_filename(person['Name'])}_"
+                                f"Certificate_{number}.pdf"
+                            )
+
+                            files.append(
+                                (filename, pdf)
+                            )
+
+                        success_count += 1
+
+                    except Exception as exception:
+                        files = []
+                        error = str(exception)
+                        failed_count += 1
+
+                    records.append({
+                        "person": person,
+                        "files": files,
+                        "error": error
+                    })
+
+                    bar.progress(
+                        position / total,
+                        text=(
+                            f"Generated {position} of {total} "
+                            f"participants"
+                        )
+                    )
+
+                s.records = records
+
+                s.generated_sig = generation_signature()
+
+                s.send_results = None
+                s.send_sig = None
+
+                current.empty()
+
+                status.update(
+                    label="Certificate generation finished",
+                    state=(
+                        "complete"
+                        if failed_count == 0
+                        else "error"
+                    ),
+                    expanded=False
+                )
+
+            if failed_count == 0:
+                st.success(
+                    f"Successfully generated certificates "
+                    f"for all {success_count} participants."
+                )
+
+            else:
+                st.warning(
+                    f"{success_count} participants completed; "
+                    f"{failed_count} failed."
+                )
+
+        if s.records:
+            failed = [
+                record
+                for record in s.records
+                if len(record["files"]) != s.count
+            ]
+
+            good = [
+                record
+                for record in s.records
+                if len(record["files"]) == s.count
+            ]
+
+            if failed:
+                st.error(
+                    f"{len(failed)} participant(s) failed."
+                )
+
+                st.dataframe(
+                    pd.DataFrame([
+                        {
+                            "Name": record["person"]["Name"],
+                            "Error": record["error"]
+                        }
+                        for record in failed
+                    ]),
+                    hide_index=True
+                )
+
+            if good:
+                with st.spinner(
+                    "Preparing ZIP download...",
+                    show_time=True
+                ):
+                    zip_buffer = BytesIO()
+
+                    with ZipFile(
+                        zip_buffer,
+                        "w",
+                        ZIP_DEFLATED
+                    ) as archive:
+                        for record in good:
+                            for filename, pdf in record["files"]:
+                                archive.writestr(
+                                    filename,
+                                    pdf
+                                )
+
+                st.download_button(
+                    "Download all certificates (ZIP)",
+                    zip_buffer.getvalue(),
+                    "miraetech_certificates.zip",
+                    "application/zip",
+                    type="primary"
+                )
+
+                selected = st.selectbox(
+                    "Participant",
+                    range(len(good)),
+                    format_func=lambda index: (
+                        good[index]["person"]["Name"]
+                    )
+                )
+
+                for filename, pdf in good[selected]["files"]:
+                    st.download_button(
+                        f"Download {filename}",
+                        pdf,
+                        filename,
+                        "application/pdf",
+                        key=filename
+                    )
+
+    navigation()
 
 
 # ==================================================
-# PAGE 6: EMAIL
+# PAGE 6: EMAIL DELIVERY
 # ==================================================
 
-elif st.session_state.page == 5:
-    st.header("Email Delivery")
+elif s.page == 5:
+    st.header("6 · Email delivery")
 
-    records = [
-        item
-        for item in st.session_state.records
-        if len(item["attachments"])
-        == st.session_state.certificate_count
-    ]
-
-    if not generation_ready():
+    if not progress_flags()[4]:
         st.warning(
             "Generate all certificates successfully first."
         )
 
     else:
-        st.metric(
-            "Participants",
-            len(records),
-        )
-
         subject = st.text_input(
             "Email subject",
-            key="email_subject",
+            key="subject"
         )
 
         body = st.text_area(
-            "Email message",
-            height=160,
-            key="email_body",
+            "Email body",
+            key="body",
+            height=170
         )
 
         st.caption(
-            "Available placeholders: {{Name}}, {{Email}}"
+            "Use {{Name}} and {{Email}} "
+            "to personalize your email."
         )
 
         selected = st.selectbox(
             "Preview recipient",
-            range(len(records)),
-            format_func=lambda i: (
-                records[i]["student"]["Name"]
-            ),
+            range(len(s.records)),
+            format_func=lambda index: (
+                s.records[index]["person"]["Name"]
+            )
         )
 
-        sample = records[selected]
+        person = s.records[selected]["person"]
 
         st.write(
             "**To:**",
-            sample["student"]["Email"],
+            person["Email"]
         )
 
         st.write(
             "**Subject:**",
-            render_email(
-                subject,
-                sample["student"],
-            ),
+            replace_tokens(subject, person)
         )
 
         st.text(
-            render_email(
-                body,
-                sample["student"],
-            )
+            replace_tokens(body, person)
         )
 
         st.write(
-            "**PDF attachments:**",
-            len(sample["attachments"]),
+            "**Attachments:**",
+            len(s.records[selected]["files"])
         )
 
-        for filename, _ in sample["attachments"]:
-            st.caption(filename)
-
-        st.divider()
-
         sender = st.text_input(
-            "Sender Gmail address",
-            key="sender_email",
+            "Sender Gmail address"
         ).strip()
 
         password = st.text_input(
             "Gmail App Password",
-            type="password",
-            key="gmail_password",
+            type="password"
         ).replace(" ", "")
 
-        st.caption(
-            "Use a Google App Password, not your "
-            "normal Gmail password."
+        signature = hash_value([
+            s.generated_sig,
+            subject,
+            body,
+            sender
+        ])
+
+        if s.send_sig != signature:
+            s.send_sig = signature
+            s.send_results = None
+
+        if s.send_results is not None:
+            st.warning(
+                "This batch was already attempted "
+                "in this session. Check Gmail Sent "
+                "before retrying."
+            )
+
+        consent = st.checkbox(
+            "I verified all recipients and "
+            "authorize sending these emails."
         )
 
-        unknown_tokens = {
-            token.strip()
-            for token in re.findall(
-                TOKEN_PATTERN,
-                subject + "\n" + body,
+        unknown = set(
+            re.findall(
+                r"\{\{\s*([^{}]+?)\s*\}\}",
+                subject + "\n" + body
             )
-            if token.strip() not in ("Name", "Email")
-        }
+        ) - {"Name", "Email"}
 
-        if unknown_tokens:
+        if unknown:
             st.error(
-                "Unknown placeholders: "
-                + ", ".join(sorted(unknown_tokens))
+                f"Unknown placeholders: {sorted(unknown)}"
             )
 
         valid_sender = bool(
-            re.fullmatch(EMAIL_PATTERN, sender)
+            re.fullmatch(
+                r"[^@\s]+@[^@\s]+\.[^@\s]+",
+                sender
+            )
         )
 
-        valid_message = bool(
-            subject.strip()
-            and body.strip()
+        ready = (
+            consent
+            and valid_sender
+            and len(password) == 16
+            and bool(subject.strip())
+            and bool(body.strip())
+            and not unknown
             and "\n" not in subject
             and "\r" not in subject
-            and not unknown_tokens
-        )
-
-        batch_signature = object_hash({
-            "generation": generation_signature(),
-            "subject": subject,
-            "body": body,
-            "sender": sender,
-        })
-
-        if (
-            st.session_state.send_signature
-            != batch_signature
-        ):
-            st.session_state.send_signature = (
-                batch_signature
-            )
-            st.session_state.send_results = None
-
-        if st.session_state.send_results is not None:
-            st.warning(
-                "This email batch was already attempted "
-                "during this session. Check Gmail Sent "
-                "before attempting it again."
-            )
-
-        confirmed = st.checkbox(
-            "I have checked the recipients and "
-            "authorize sending these certificates."
-        )
-
-        can_send = (
-            valid_sender
-            and len(password) == 16
-            and valid_message
-            and confirmed
-            and st.session_state.send_results is None
+            and s.send_results is None
         )
 
         if st.button(
-            "Send Certificates",
+            "Send certificates",
             type="primary",
-            disabled=not can_send,
+            disabled=not ready
         ):
-            results = [
-                {
-                    "Name": item["student"]["Name"],
-                    "Email": item["student"]["Email"],
-                    "Attachments": len(item["attachments"]),
-                    "Status": "Not attempted",
-                }
-                for item in records
-            ]
+            with st.status(
+                "Sending certificate emails...",
+                expanded=True
+            ) as status:
 
-            st.session_state.send_results = results
+                total = len(s.records)
 
-            progress = st.progress(0)
+                s.send_results = [
+                    {
+                        "Name": record["person"]["Name"],
+                        "Email": record["person"]["Email"],
+                        "Status": "Not attempted"
+                    }
+                    for record in s.records
+                ]
 
-            for index, record in enumerate(records):
-                student = record["student"]
-
-                results[index]["Status"] = (
-                    "Attempted - awaiting result"
+                bar = st.progress(
+                    0,
+                    text="Starting email delivery..."
                 )
 
-                try:
-                    send_certificate(
-                        sender=sender,
-                        app_password=password,
-                        recipient=student["Email"],
-                        subject=render_email(
-                            subject,
-                            student,
-                        ),
-                        body=render_email(
-                            body,
-                            student,
-                        ),
-                        attachments=record["attachments"],
+                current = st.empty()
+
+                accepted_count = 0
+                failed_count = 0
+
+                for index, record in enumerate(
+                    s.records
+                ):
+                    recipient = record["person"]["Email"]
+
+                    current.info(
+                        f"Sending to: {recipient}"
                     )
 
-                    results[index]["Status"] = (
-                        "Accepted by Gmail"
+                    s.send_results[index]["Status"] = (
+                        "Attempted — check Gmail Sent"
                     )
 
-                except Exception as error:
-                    results[index]["Status"] = (
-                        "Not confirmed - check Gmail Sent"
+                    try:
+                        send_certificate(
+                            sender,
+                            password,
+                            recipient,
+                            replace_tokens(
+                                subject,
+                                record["person"]
+                            ),
+                            replace_tokens(
+                                body,
+                                record["person"]
+                            ),
+                            record["files"]
+                        )
+
+                        s.send_results[index]["Status"] = (
+                            "Accepted by Gmail"
+                        )
+
+                        accepted_count += 1
+
+                    except Exception as error:
+                        failed_count += 1
+
+                        st.warning(
+                            f"{recipient}: {error}"
+                        )
+
+                    bar.progress(
+                        (index + 1) / total,
+                        text=(
+                            f"Processed {index + 1} "
+                            f"of {total} emails"
+                        )
                     )
 
-                    st.warning(
-                        f"{student['Email']}: {error}"
-                    )
+                current.empty()
 
-                progress.progress(
-                    (index + 1) / len(records)
+                status.update(
+                    label="Email processing finished",
+                    state=(
+                        "complete"
+                        if failed_count == 0
+                        else "error"
+                    ),
+                    expanded=False
                 )
 
-            st.session_state.send_results = results
+            if failed_count == 0:
+                st.success(
+                    f"All {accepted_count} emails were "
+                    f"accepted by Gmail."
+                )
 
-        if st.session_state.send_results is not None:
+            else:
+                st.warning(
+                    f"{accepted_count} accepted by Gmail; "
+                    f"{failed_count} encountered errors."
+                )
+
+        if s.send_results is not None:
             report = pd.DataFrame(
-                st.session_state.send_results
+                s.send_results
             )
-
-            st.subheader("Sending Report")
 
             st.dataframe(
                 report,
                 hide_index=True,
-                use_container_width=True,
+                use_container_width=True
             )
 
             st.download_button(
-                "Download Sending Report",
-                data=report.to_csv(
+                "Download sending report",
+                report.to_csv(
                     index=False
                 ).encode("utf-8-sig"),
-                file_name="sending_report.csv",
-                mime="text/csv",
+                "sending_report.csv",
+                "text/csv"
             )
 
             st.caption(
-                "Gmail accepting an email does not "
-                "guarantee inbox delivery."
+                "Gmail acceptance does not guarantee "
+                "delivery to the recipient's inbox."
             )
 
-    navigation_buttons()
+    navigation()

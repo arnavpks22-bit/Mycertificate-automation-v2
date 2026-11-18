@@ -9,45 +9,24 @@ def send_certificate(
     recipient,
     subject,
     body,
-    attachments,
+    attachments
 ):
-    sender = sender.strip()
-    recipient = recipient.strip()
-    app_password = app_password.replace(" ", "")
-
-    if not sender or not recipient:
-        raise ValueError(
-            "Sender and recipient are required."
-        )
-
-    if not app_password:
-        raise ValueError(
-            "Gmail App Password is required."
-        )
-
-    if not attachments:
-        raise ValueError(
-            "No certificate attachments provided."
-        )
-
     message = EmailMessage()
 
-    message["From"] = sender
-    message["To"] = recipient
+    message["From"] = sender.strip()
+    message["To"] = recipient.strip()
     message["Subject"] = subject
+
     message.set_content(body)
 
-    for filename, pdf_bytes in attachments:
-        if not isinstance(pdf_bytes, bytes):
-            raise TypeError("PDF must be bytes.")
-
-        if not pdf_bytes.startswith(b"%PDF"):
+    for filename, pdf in attachments:
+        if not pdf.startswith(b"%PDF"):
             raise ValueError(
-                f"Invalid PDF: {filename}"
+                f"Invalid PDF attachment: {filename}"
             )
 
         message.add_attachment(
-            pdf_bytes,
+            pdf,
             maintype="application",
             subtype="pdf",
             filename=filename
@@ -58,7 +37,10 @@ def send_certificate(
         465,
         timeout=30
     ) as smtp:
-        smtp.login(sender, app_password)
-        smtp.send_message(message)
 
-    return True
+        smtp.login(
+            sender.strip(),
+            app_password.replace(" ", "")
+        )
+
+        smtp.send_message(message)
